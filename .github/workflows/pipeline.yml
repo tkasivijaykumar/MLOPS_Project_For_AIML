@@ -1,0 +1,143 @@
+name: Visit-with-Us MLOps Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------- JOB 1: Register Dataset ----------
+  register-dataset:
+    name: Register Dataset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pandas numpy scikit-learn joblib
+      - name: Register dataset
+        run: python scripts/validate_data.py data/tourism.csv
+      - name: Upload registered dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: registered-data
+          path: data/tourism.csv
+
+  # ---------- JOB 2: Data Preparation ----------
+  data-preparation:
+    name: Data Preparation
+    needs: register-dataset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pandas numpy scikit-learn
+      - name: Prepare data
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          from sklearn.model_selection import train_test_split
+          df = pd.read_csv("data/tourism.csv")
+          df = df.drop(columns=["Unnamed: 0", "CustomerID"], errors="ignore").drop_duplicates()
+          for c in df.select_dtypes(include=["object"]).columns:
+              df[c] = df[c].astype("string").str.strip()
+          X, y = df.drop(columns=["ProdTaken"]), df["ProdTaken"].astype(int)
+          Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.20, stratify=y, random_state=42)
+          Path("artifacts").mkdir(exist_ok=True)
+          pd.concat([Xtr, ytr], axis=1).to_csv("artifacts/train.csv", index=False)
+          pd.concat([Xte, yte], axis=1).to_csv("artifacts/test.csv", index=False)
+          PY
+      - name: Upload train/test splits
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-splits
+          path: |
+            artifacts/train.csv
+            artifacts/test.csv
+
+  # ---------- JOB 3: Model Training ----------
+  model-training:
+    name: Model Training
+    needs: data-preparation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pandas numpy scikit-learn joblib
+      - name: Download train/test splits
+        uses: actions/download-artifact@v4
+        with:
+          name: data-splits
+          path: artifacts
+      - name: Train, tune, evaluate and save model
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import joblib, pandas as pd
+          from sklearn.compose import ColumnTransformer
+          from sklearn.pipeline import Pipeline
+          from sklearn.preprocessing import OneHotEncoder
+          from sklearn.impute import SimpleImputer
+          from sklearn.ensemble import RandomForestClassifier
+          from sklearn.model_selection import GridSearchCV, StratifiedKFold
+          from sklearn.metrics import roc_auc_score
+          tr = pd.read_csv("artifacts/train.csv")
+          te = pd.read_csv("artifacts/test.csv")
+          Xtr, ytr = tr.drop(columns=["ProdTaken"]), tr["ProdTaken"]
+          Xte, yte = te.drop(columns=["ProdTaken"]), te["ProdTaken"]
+          cat = Xtr.select_dtypes(include=["object", "string"]).columns.tolist()
+          num = [c for c in Xtr.columns if c not in cat]
+          prep = ColumnTransformer([
+              ("num", SimpleImputer(strategy="median"), num),
+              ("cat", Pipeline([
+                  ("imp", SimpleImputer(strategy="most_frequent")),
+                  ("ohe", OneHotEncoder(handle_unknown="ignore"))
+              ]), cat)
+          ])
+          pipe = Pipeline([
+              ("preprocessor", prep),
+              ("model", RandomForestClassifier(random_state=42, n_jobs=-1, class_weight="balanced"))
+          ])
+          params = {
+              "model__n_estimators": [150, 250],
+              "model__max_depth": [8, 14, None],
+              "model__min_samples_leaf": [1, 2],
+              "model__max_features": ["sqrt", "log2"]
+          }
+          grid = GridSearchCV(
+              pipe, params, scoring="roc_auc",
+              cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42), n_jobs=-1
+          )
+          grid.fit(Xtr, ytr)
+          Path("models").mkdir(exist_ok=True)
+          Path("artifacts").mkdir(exist_ok=True)
+          joblib.dump(grid.best_estimator_, "models/wellness_tourism_model.joblib")
+          auc = roc_auc_score(yte, grid.best_estimator_.predict_proba(Xte)[:, 1])
+          with open("artifacts/metrics.json", "w") as f:
+              json.dump({"test_roc_auc": float(auc), "best_params": grid.best_params_}, f, indent=2)
+          print("Test ROC-AUC:", round(auc, 4))
+          print("Best parameters:", grid.best_params_)
+          PY
+      - name: Commit trained model and metrics to main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add models/ artifacts/metrics.json
+          git diff --cached --quiet || git commit -m "chore: update trained model and metrics [skip ci]"
+          git push
