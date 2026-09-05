@@ -1,9 +1,7 @@
 {
-  "test_roc_auc": 0.966721425726802,
-  "best_params": {
-    "model__max_depth": null,
-    "model__max_features": "sqrt",
-    "model__min_samples_leaf": 1,
-    "model__n_estimators": 250
-  }
+  "Accuracy": 0.8978829389788294,
+  "Precision": 0.9397590361445783,
+  "Recall": 0.5032258064516129,
+  "F1": 0.6554621848739496,
+  "ROC-AUC": 0.967652329749104
 }
