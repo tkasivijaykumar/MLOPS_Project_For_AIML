@@ -1,0 +1,32 @@
+{
+  "experiment_name": "wellness_tourism_random_forest",
+  "algorithm": "RandomForestClassifier",
+  "selection_metric": "roc_auc",
+  "random_state": 42,
+  "best_cv_roc_auc": 0.9400970087555507,
+  "best_params": {
+    "model__max_depth": null,
+    "model__max_features": "sqrt",
+    "model__min_samples_leaf": 1,
+    "model__n_estimators": 250
+  },
+  "tested_parameter_grid": {
+    "model__n_estimators": [
+      150,
+      250
+    ],
+    "model__max_depth": [
+      8,
+      14,
+      null
+    ],
+    "model__min_samples_leaf": [
+      1,
+      2
+    ],
+    "model__max_features": [
+      "sqrt",
+      "log2"
+    ]
+  }
+}
